@@ -63,7 +63,20 @@ def is_similar(
     Returns:
         True if the images are similar, False otherwise.
     """
-    similarity: float = mean_structured_similarity_index(img1, img2)
+    # Downsample for performance (approx 320px width)
+    target_width = 320
+    h, w = img1.shape[:2]
+
+    # Only downsample if image is significantly larger than target
+    if w > target_width:
+        step = max(1, w // target_width)
+        img1_small = img1[::step, ::step]
+        img2_small = img2[::step, ::step]
+    else:
+        img1_small = img1
+        img2_small = img2
+
+    similarity: float = mean_structured_similarity_index(img1_small, img2_small)
     return similarity >= similarity_threshold
 
 
@@ -146,49 +159,6 @@ def record_screenshots_thread() -> None:
                 filepath = os.path.join(screenshots_path, filename)
                 image.save(
                     filepath,
-                    format="webp",
-                    lossless=True,
-                )
-                text: str = extract_text_from_image(current_screenshot)
-                # Only proceed if OCR actually extracts text
-                if text.strip():
-                    embedding: np.ndarray = get_embedding(text)
-                    active_app_name: str = get_active_app_name() or "Unknown App"
-                    active_window_title: str = get_active_window_title() or "Unknown Title"
-                    insert_entry(
-                        text, timestamp, embedding, active_app_name, active_window_title, filename # Pass filename
-                    )
-
-        time.sleep(3) # Wait before taking the next screenshot
-
-    return screenshots
-
-
-def record_screenshots_thread():
-    # TODO: fix the error from huggingface tokenizers
-    import os
-
-    os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
-    last_screenshots = take_screenshots()
-
-    while True:
-        if not is_user_active():
-            time.sleep(3)
-            continue
-
-        screenshots = take_screenshots()
-
-        for i, screenshot in enumerate(screenshots):
-
-            last_screenshot = last_screenshots[i]
-
-            if not is_similar(screenshot, last_screenshot):
-                last_screenshots[i] = screenshot
-                image = Image.fromarray(screenshot)
-                timestamp = int(time.time())
-                image.save(
-                    os.path.join(screenshots_path, f"{timestamp}.webp"),
                     format="webp",
                     lossless=True,
                 )
