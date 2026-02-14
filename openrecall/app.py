@@ -1,7 +1,8 @@
+import re
 from threading import Thread
 
 import numpy as np
-from flask import Flask, render_template_string, request, send_from_directory
+from flask import Flask, abort, render_template_string, request, send_from_directory
 from jinja2 import BaseLoader
 
 from openrecall.config import appdata_folder, screenshots_path
@@ -14,6 +15,9 @@ app = Flask(__name__)
 
 app.jinja_env.filters["human_readable_time"] = human_readable_time
 app.jinja_env.filters["timestamp_to_human_readable"] = timestamp_to_human_readable
+
+_IMAGE_FILENAME_PATTERN = re.compile(r"^\d+\.webp$")
+_MAX_QUERY_LENGTH = 500
 
 base_template = """
 <!DOCTYPE html>
@@ -68,7 +72,7 @@ base_template = """
   <script src="https://code.jquery.com/jquery-3.5.1.slim.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@popperjs/core@2.5.3/dist/umd/popper.min.js"></script>
   <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/js/bootstrap.min.js"></script>
-  
+
 </body>
 </html>
 """
@@ -84,9 +88,22 @@ class StringLoader(BaseLoader):
 app.jinja_env.loader = StringLoader()
 
 
+@app.after_request
+def set_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "img-src 'self'; "
+        "style-src 'self' https://stackpath.bootstrapcdn.com https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "script-src 'self' https://code.jquery.com https://cdn.jsdelivr.net https://stackpath.bootstrapcdn.com;"
+    )
+    return response
+
+
 @app.route("/")
 def timeline():
-    # connect to db
     timestamps = get_timestamps()
     return render_template_string(
         """
@@ -111,13 +128,12 @@ def timeline():
     slider.addEventListener('input', function() {
       const reversedIndex = timestamps.length - 1 - slider.value;
       const timestamp = timestamps[reversedIndex];
-      sliderValue.textContent = new Date(timestamp * 1000).toLocaleString();  // Convert to human-readable format
+      sliderValue.textContent = new Date(timestamp * 1000).toLocaleString();
       timestampImage.src = `/static/${timestamp}.webp`;
     });
 
-    // Initialize the slider with a default value
     slider.value = timestamps.length - 1;
-    sliderValue.textContent = new Date(timestamps[0] * 1000).toLocaleString();  // Convert to human-readable format
+    sliderValue.textContent = new Date(timestamps[0] * 1000).toLocaleString();
     timestampImage.src = `/static/${timestamps[0]}.webp`;
   </script>
 {% else %}
@@ -135,9 +151,24 @@ def timeline():
 
 @app.route("/search")
 def search():
-    q = request.args.get("q")
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return render_template_string(
+            """
+{% extends "base_template" %}
+{% block content %}
+  <div class="container mt-4">
+    <div class="alert alert-info" role="alert">Please enter a search query.</div>
+  </div>
+{% endblock %}
+"""
+        )
+
+    if len(q) > _MAX_QUERY_LENGTH:
+        abort(413, description=f"Search query exceeds max length of {_MAX_QUERY_LENGTH} characters.")
+
     entries = get_all_entries()
-    embeddings = [np.frombuffer(entry.embedding, dtype=np.float64) for entry in entries]
+    embeddings = [entry.embedding for entry in entries]
     query_embedding = get_embedding(q)
     similarities = [cosine_similarity(query_embedding, emb) for emb in embeddings]
     indices = np.argsort(similarities)[::-1]
@@ -175,8 +206,10 @@ def search():
     )
 
 
-@app.route("/static/<filename>")
+@app.route("/static/<path:filename>")
 def serve_image(filename):
+    if not _IMAGE_FILENAME_PATTERN.match(filename):
+        abort(404)
     return send_from_directory(screenshots_path, filename)
 
 
@@ -185,8 +218,7 @@ if __name__ == "__main__":
 
     print(f"Appdata folder: {appdata_folder}")
 
-    # Start the thread to record screenshots
     t = Thread(target=record_screenshots_thread)
     t.start()
 
-    app.run(port=8082)
+    app.run(host="127.0.0.1", port=8082)
