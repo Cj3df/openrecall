@@ -1,3 +1,9 @@
+import os
+
+# HACK: Prevents a warning/error from the huggingface/tokenizers library
+# when used in environments where multiprocessing fork safety is a concern.
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 from threading import Thread
 
 import numpy as np
