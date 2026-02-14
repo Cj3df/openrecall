@@ -39,8 +39,30 @@ def mean_structured_similarity_index(
 def is_similar(
     img1: np.ndarray, img2: np.ndarray, similarity_threshold: float = 0.9
 ) -> bool:
-    """Checks if two images are similar based on MSSIM."""
-    similarity: float = mean_structured_similarity_index(img1, img2)
+    """Checks if two images are similar based on MSSIM.
+
+    Args:
+        img1: The first image as a NumPy array.
+        img2: The second image as a NumPy array.
+        similarity_threshold: The threshold above which images are considered similar.
+
+    Returns:
+        True if the images are similar, False otherwise.
+    """
+    # Downsample for performance (approx 320px width)
+    target_width = 320
+    h, w = img1.shape[:2]
+
+    # Only downsample if image is significantly larger than target
+    if w > target_width:
+        step = max(1, w // target_width)
+        img1_small = img1[::step, ::step]
+        img2_small = img2[::step, ::step]
+    else:
+        img1_small = img1
+        img2_small = img2
+
+    similarity: float = mean_structured_similarity_index(img1_small, img2_small)
     return similarity >= similarity_threshold
 
 
@@ -87,21 +109,31 @@ def record_screenshots_thread() -> None:
         for i, current_screenshot in enumerate(current_screenshots):
             last_screenshot = last_screenshots[i]
 
-            if is_similar(current_screenshot, last_screenshot):
-                continue
+            if not is_similar(current_screenshot, last_screenshot):
+                last_screenshots[i] = current_screenshot  # Update the last screenshot for this monitor
+                image = Image.fromarray(current_screenshot)
+                timestamp = int(time.time())
+                # Add monitor index to filename to prevent overwrites in multi-monitor setups
+                filename = f"{timestamp}_{i}.webp"
+                filepath = os.path.join(screenshots_path, filename)
+                image.save(
+                    filepath,
+                    format="webp",
+                    lossless=True,
+                )
+                text: str = extract_text_from_image(current_screenshot)
+                # Only proceed if OCR actually extracts text
+                if text.strip():
+                    embedding: np.ndarray = get_embedding(text)
+                    active_app_name: str = get_active_app_name() or "Unknown App"
+                    active_window_title: str = get_active_window_title() or "Unknown Title"
+                    insert_entry(
+                        text,
+                        timestamp,
+                        embedding,
+                        active_app_name,
+                        active_window_title,
+                        filename,
+                    )
 
-            last_screenshots[i] = current_screenshot
-            timestamp = int(time.time())
-            filepath = os.path.join(screenshots_path, f"{timestamp}.webp")
-            Image.fromarray(current_screenshot).save(filepath, format="webp", lossless=True)
-
-            text: str = extract_text_from_image(current_screenshot)
-            if not text.strip():
-                continue
-
-            embedding: np.ndarray = get_embedding(text)
-            active_app_name: str = get_active_app_name() or "Unknown App"
-            active_window_title: str = get_active_window_title() or "Unknown Title"
-            insert_entry(text, timestamp, embedding, active_app_name, active_window_title)
-
-        time.sleep(3)
+        time.sleep(3)  # Wait before taking the next screenshot
