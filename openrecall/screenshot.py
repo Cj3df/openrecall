@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List, Tuple
+from typing import List
 
 import mss
 import numpy as np
