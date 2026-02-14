@@ -6,27 +6,57 @@ from typing import Any, List, Optional, Tuple
 from openrecall.config import db_path
 
 # Define the structure of a database entry using namedtuple
-Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding"])
+Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding", "filename"])
 
 
 def create_db() -> None:
     """
     Creates the SQLite database and the 'entries' table if they don't exist.
-
-    The table schema includes columns for an auto-incrementing ID, application name,
-    window title, extracted text, timestamp, and text embedding.
+    Handles migrations for older database schemas.
     """
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
+
+            # Check existing columns to determine if migration is needed
+            cursor.execute("PRAGMA table_info(entries)")
+            columns = {info[1] for info in cursor.fetchall()}
+
+            if columns and "filename" not in columns:
+                # Migration: Add filename column and remove UNIQUE constraint from timestamp
+                print("Migrating database to support multiple monitors...")
+                cursor.execute(
+                    """CREATE TABLE entries_new (
+                           id INTEGER PRIMARY KEY AUTOINCREMENT,
+                           app TEXT,
+                           title TEXT,
+                           text TEXT,
+                           timestamp INTEGER,
+                           embedding BLOB,
+                           filename TEXT
+                       )"""
+                )
+                cursor.execute(
+                    """INSERT INTO entries_new (id, app, title, text, timestamp, embedding, filename)
+                       SELECT id, app, title, text, timestamp, embedding, (timestamp || '.webp')
+                       FROM entries"""
+                )
+                cursor.execute("DROP TABLE entries")
+                cursor.execute("ALTER TABLE entries_new RENAME TO entries")
+            elif columns:
+                 # Ensure no NULL filenames exist
+                 cursor.execute("UPDATE entries SET filename = (timestamp || '.webp') WHERE filename IS NULL")
+
+            # Final table creation (for fresh installs)
             cursor.execute(
                 """CREATE TABLE IF NOT EXISTS entries (
                        id INTEGER PRIMARY KEY AUTOINCREMENT,
                        app TEXT,
                        title TEXT,
                        text TEXT,
-                       timestamp INTEGER UNIQUE,
-                       embedding BLOB
+                       timestamp INTEGER,
+                       embedding BLOB,
+                       filename TEXT
                    )"""
             )
             # Add index on timestamp for faster lookups
@@ -51,7 +81,7 @@ def get_all_entries() -> List[Entry]:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row  # Return rows as dictionary-like objects
             cursor = conn.cursor()
-            cursor.execute("SELECT id, app, title, text, timestamp, embedding FROM entries ORDER BY timestamp DESC")
+            cursor.execute("SELECT id, app, title, text, timestamp, embedding, filename FROM entries ORDER BY timestamp DESC")
             results = cursor.fetchall()
             for row in results:
                 # Deserialize the embedding blob back into a NumPy array
@@ -64,6 +94,7 @@ def get_all_entries() -> List[Entry]:
                         text=row["text"],
                         timestamp=row["timestamp"],
                         embedding=embedding,
+                        filename=row["filename"],
                     )
                 )
     except sqlite3.Error as e:
@@ -71,29 +102,29 @@ def get_all_entries() -> List[Entry]:
     return entries
 
 
-def get_timestamps() -> List[int]:
+def get_timestamps() -> List[Tuple[int, str]]:
     """
-    Retrieves all timestamps from the database, ordered descending.
+    Retrieves all timestamps and filenames from the database, ordered descending.
 
     Returns:
-        List[int]: A list of all timestamps.
+        List[Tuple[int, str]]: A list of all (timestamp, filename) tuples.
                    Returns an empty list if the table is empty or an error occurs.
     """
-    timestamps: List[int] = []
+    data: List[Tuple[int, str]] = []
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             # Use the index for potentially faster retrieval
-            cursor.execute("SELECT timestamp FROM entries ORDER BY timestamp DESC")
+            cursor.execute("SELECT timestamp, filename FROM entries ORDER BY timestamp DESC")
             results = cursor.fetchall()
-            timestamps = [result[0] for result in results]
+            data = [(result[0], result[1]) for result in results]
     except sqlite3.Error as e:
         print(f"Database error while fetching timestamps: {e}")
-    return timestamps
+    return data
 
 
 def insert_entry(
-    text: str, timestamp: int, embedding: np.ndarray, app: str, title: str
+    text: str, timestamp: int, embedding: np.ndarray, app: str, title: str, filename: str
 ) -> Optional[int]:
     """
     Inserts a new entry into the database.
@@ -104,6 +135,7 @@ def insert_entry(
         embedding (np.ndarray): The embedding vector for the text.
         app (str): The name of the active application.
         title (str): The title of the active window.
+        filename (str): The filename of the screenshot.
 
     Returns:
         Optional[int]: The ID of the newly inserted row, or None if insertion fails.
@@ -115,10 +147,9 @@ def insert_entry(
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO entries (text, timestamp, embedding, app, title)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(timestamp) DO NOTHING""", # Avoid duplicates based on timestamp
-                (text, timestamp, embedding_bytes, app, title),
+                """INSERT INTO entries (text, timestamp, embedding, app, title, filename)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (text, timestamp, embedding_bytes, app, title, filename),
             )
             conn.commit()
             if cursor.rowcount > 0: # Check if insert actually happened
