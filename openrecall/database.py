@@ -1,4 +1,5 @@
 import sqlite3
+import re
 from collections import namedtuple
 import numpy as np
 from typing import Any, List, Optional, Tuple
@@ -6,7 +7,11 @@ from typing import Any, List, Optional, Tuple
 from openrecall.config import db_path
 
 # Define the structure of a database entry using namedtuple
-Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding"])
+Entry = namedtuple(
+    "Entry", ["id", "app", "title", "text", "timestamp", "embedding", "filename"]
+)
+
+FILENAME_PATTERN = re.compile(r"^\d+(?:_\d+)?\.webp$")
 
 
 def create_db() -> None:
@@ -29,6 +34,17 @@ def create_db() -> None:
                        embedding BLOB
                    )"""
             )
+
+            # Check if filename column exists and add it if not
+            cursor.execute("PRAGMA table_info(entries)")
+            columns = [info[1] for info in cursor.fetchall()]
+            if "filename" not in columns:
+                cursor.execute("ALTER TABLE entries ADD COLUMN filename TEXT")
+                # Backfill existing entries with default filename format (timestamp.webp)
+                cursor.execute(
+                    "UPDATE entries SET filename = CAST(timestamp AS TEXT) || '.webp'"
+                )
+
             # Add index on timestamp for faster lookups
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_timestamp ON entries (timestamp)"
@@ -51,11 +67,14 @@ def get_all_entries() -> List[Entry]:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row  # Return rows as dictionary-like objects
             cursor = conn.cursor()
-            cursor.execute("SELECT id, app, title, text, timestamp, embedding FROM entries ORDER BY timestamp DESC")
+            cursor.execute(
+                "SELECT id, app, title, text, timestamp, embedding, filename FROM entries ORDER BY timestamp DESC"
+            )
             results = cursor.fetchall()
             for row in results:
                 # Deserialize the embedding blob back into a NumPy array
-                embedding = np.frombuffer(row["embedding"], dtype=np.float32) # Assuming float32, adjust if needed
+                # Assuming float32, adjust if needed
+                embedding = np.frombuffer(row["embedding"], dtype=np.float32)
                 entries.append(
                     Entry(
                         id=row["id"],
@@ -64,6 +83,7 @@ def get_all_entries() -> List[Entry]:
                         text=row["text"],
                         timestamp=row["timestamp"],
                         embedding=embedding,
+                        filename=row["filename"] if "filename" in row.keys() else None,
                     )
                 )
     except sqlite3.Error as e:
@@ -71,29 +91,38 @@ def get_all_entries() -> List[Entry]:
     return entries
 
 
-def get_timestamps() -> List[int]:
+def get_timestamps() -> List[dict]:
     """
-    Retrieves all timestamps from the database, ordered descending.
+    Retrieves all timestamps and filenames from the database, ordered descending.
 
     Returns:
-        List[int]: A list of all timestamps.
-                   Returns an empty list if the table is empty or an error occurs.
+        List[dict]: A list of dicts with 'timestamp' and 'filename' keys.
+                    Returns an empty list if the table is empty or an error occurs.
     """
-    timestamps: List[int] = []
+    timestamps: List[dict] = []
     try:
         with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             # Use the index for potentially faster retrieval
-            cursor.execute("SELECT timestamp FROM entries ORDER BY timestamp DESC")
+            cursor.execute("SELECT timestamp, filename FROM entries ORDER BY timestamp DESC")
             results = cursor.fetchall()
-            timestamps = [result[0] for result in results]
+            timestamps = [
+                {"timestamp": row["timestamp"], "filename": row["filename"]}
+                for row in results
+            ]
     except sqlite3.Error as e:
         print(f"Database error while fetching timestamps: {e}")
     return timestamps
 
 
 def insert_entry(
-    text: str, timestamp: int, embedding: np.ndarray, app: str, title: str
+    text: str,
+    timestamp: int,
+    embedding: np.ndarray,
+    app: str,
+    title: str,
+    filename: Optional[str] = None,
 ) -> Optional[int]:
     """
     Inserts a new entry into the database.
@@ -104,21 +133,32 @@ def insert_entry(
         embedding (np.ndarray): The embedding vector for the text.
         app (str): The name of the active application.
         title (str): The title of the active window.
+        filename (str, optional): The filename of the screenshot. Defaults to None.
+                                  If None, defaults to f"{timestamp}.webp".
 
     Returns:
         Optional[int]: The ID of the newly inserted row, or None if insertion fails.
                        Prints an error message to stderr on failure.
     """
-    embedding_bytes: bytes = embedding.astype(np.float32).tobytes() # Ensure consistent dtype
+    if filename is None:
+        filename = f"{timestamp}.webp"
+
+    if not FILENAME_PATTERN.match(filename):
+        print(f"Invalid filename format: {filename}")
+        return None
+
+    embedding_bytes: bytes = (
+        embedding.astype(np.float32).tobytes()
+    )  # Ensure consistent dtype
     last_row_id: Optional[int] = None
     try:
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO entries (text, timestamp, embedding, app, title)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(timestamp) DO NOTHING""", # Avoid duplicates based on timestamp
-                (text, timestamp, embedding_bytes, app, title),
+                """INSERT INTO entries (text, timestamp, embedding, app, title, filename)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(timestamp) DO NOTHING""",  # Avoid duplicates based on timestamp
+                (text, timestamp, embedding_bytes, app, title, filename),
             )
             conn.commit()
             if cursor.rowcount > 0: # Check if insert actually happened

@@ -16,7 +16,7 @@ app = Flask(__name__)
 app.jinja_env.filters["human_readable_time"] = human_readable_time
 app.jinja_env.filters["timestamp_to_human_readable"] = timestamp_to_human_readable
 
-_IMAGE_FILENAME_PATTERN = re.compile(r"^\d+\.webp$")
+_IMAGE_FILENAME_PATTERN = re.compile(r"^\d+(?:_\d+)?\.webp$")
 _MAX_QUERY_LENGTH = 500
 
 base_template = """
@@ -113,10 +113,10 @@ def timeline():
   <div class="container">
     <div class="slider-container">
       <input type="range" class="slider custom-range" id="discreteSlider" min="0" max="{{timestamps|length - 1}}" step="1" value="{{timestamps|length - 1}}">
-      <div class="slider-value" id="sliderValue">{{timestamps[0] | timestamp_to_human_readable }}</div>
+      <div class="slider-value" id="sliderValue">{{timestamps[0].timestamp | timestamp_to_human_readable }}</div>
     </div>
     <div class="image-container">
-      <img id="timestampImage" src="/static/{{timestamps[0]}}.webp" alt="Image for timestamp">
+      <img id="timestampImage" src="/static/{{timestamps[0].filename}}" alt="Image for timestamp">
     </div>
   </div>
   <script>
@@ -127,14 +127,14 @@ def timeline():
 
     slider.addEventListener('input', function() {
       const reversedIndex = timestamps.length - 1 - slider.value;
-      const timestamp = timestamps[reversedIndex];
-      sliderValue.textContent = new Date(timestamp * 1000).toLocaleString();
-      timestampImage.src = `/static/${timestamp}.webp`;
+      const entry = timestamps[reversedIndex];
+      sliderValue.textContent = new Date(entry.timestamp * 1000).toLocaleString();
+      timestampImage.src = `/static/${entry.filename}`;
     });
 
     slider.value = timestamps.length - 1;
-    sliderValue.textContent = new Date(timestamps[0] * 1000).toLocaleString();
-    timestampImage.src = `/static/${timestamps[0]}.webp`;
+    sliderValue.textContent = new Date(timestamps[0].timestamp * 1000).toLocaleString();
+    timestampImage.src = `/static/${timestamps[0].filename}`;
   </script>
 {% else %}
   <div class="container">
@@ -184,7 +184,7 @@ def search():
                 <div class="col-md-3 mb-4">
                     <div class="card">
                         <a href="#" data-toggle="modal" data-target="#modal-{{ loop.index0 }}">
-                            <img src="/static/{{ entry['timestamp'] }}.webp" alt="Image" class="card-img-top">
+                            <img src="/static/{{ entry.filename }}" alt="Image" class="card-img-top">
                         </a>
                     </div>
                 </div>
@@ -192,7 +192,7 @@ def search():
                     <div class="modal-dialog modal-xl" role="document" style="max-width: none; width: 100vw; height: 100vh; padding: 20px;">
                         <div class="modal-content" style="height: calc(100vh - 40px); width: calc(100vw - 40px); padding: 0;">
                             <div class="modal-body" style="padding: 0;">
-                                <img src="/static/{{ entry['timestamp'] }}.webp" alt="Image" style="width: 100%; height: 100%; object-fit: contain; margin: 0 auto;">
+                                <img src="/static/{{ entry.filename }}" alt="Image" style="width: 100%; height: 100%; object-fit: contain; margin: 0 auto;">
                             </div>
                         </div>
                     </div>
