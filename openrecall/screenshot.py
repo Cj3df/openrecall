@@ -20,11 +20,15 @@ def mean_structured_similarity_index(
     K1, K2 = 0.01, 0.03
     C1, C2 = (K1 * L) ** 2, (K2 * L) ** 2
 
-    def rgb2gray(img: np.ndarray) -> np.ndarray:
-        return 0.2989 * img[..., 0] + 0.5870 * img[..., 1] + 0.1140 * img[..., 2]
+    def bgr2gray(img: np.ndarray) -> np.ndarray:
+        # Check if image has 4 channels (BGRA) or 3 (BGR/RGB)
+        # Assuming BGR/BGRA order: B=0, G=1, R=2
+        return (
+            0.1140 * img[..., 0] + 0.5870 * img[..., 1] + 0.2989 * img[..., 2]
+        )
 
-    img1_gray: np.ndarray = rgb2gray(img1)
-    img2_gray: np.ndarray = rgb2gray(img2)
+    img1_gray: np.ndarray = bgr2gray(img1)
+    img2_gray: np.ndarray = bgr2gray(img2)
     mu1: float = np.mean(img1_gray)
     mu2: float = np.mean(img2_gray)
     sigma1_sq = np.var(img1_gray)
@@ -82,7 +86,9 @@ def take_screenshots() -> List[np.ndarray]:
 
             monitor_info = sct.monitors[i]
             sct_img = sct.grab(monitor_info)
-            screenshot = np.array(sct_img)[:, :, [2, 1, 0]]
+            # mss returns BGRA. Keeping it as is avoids expensive copy and
+            # channel swap.
+            screenshot = np.array(sct_img)
             screenshots.append(screenshot)
 
     return screenshots
@@ -111,7 +117,11 @@ def record_screenshots_thread() -> None:
 
             if not is_similar(current_screenshot, last_screenshot):
                 last_screenshots[i] = current_screenshot  # Update the last screenshot for this monitor
-                image = Image.fromarray(current_screenshot)
+
+                # Convert BGRA to RGB only when needed for saving and OCR
+                rgb_screenshot = current_screenshot[:, :, [2, 1, 0]]
+
+                image = Image.fromarray(rgb_screenshot)
                 timestamp = int(time.time())
                 # Add monitor index to filename to prevent overwrites in multi-monitor setups
                 filename = f"{timestamp}_{i}.webp"
@@ -121,7 +131,7 @@ def record_screenshots_thread() -> None:
                     format="webp",
                     lossless=True,
                 )
-                text: str = extract_text_from_image(current_screenshot)
+                text: str = extract_text_from_image(rgb_screenshot)
                 # Only proceed if OCR actually extracts text
                 if text.strip():
                     embedding: np.ndarray = get_embedding(text)
