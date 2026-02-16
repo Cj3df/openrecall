@@ -6,7 +6,7 @@ from typing import Any, List, Optional, Tuple
 from openrecall.config import db_path
 
 # Define the structure of a database entry using namedtuple
-Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding"])
+Entry = namedtuple("Entry", ["id", "app", "title", "text", "timestamp", "embedding", "filename"])
 
 
 def create_db() -> None:
@@ -14,7 +14,7 @@ def create_db() -> None:
     Creates the SQLite database and the 'entries' table if they don't exist.
 
     The table schema includes columns for an auto-incrementing ID, application name,
-    window title, extracted text, timestamp, and text embedding.
+    window title, extracted text, timestamp, text embedding, and filename.
     """
     try:
         with sqlite3.connect(db_path) as conn:
@@ -26,13 +26,22 @@ def create_db() -> None:
                        title TEXT,
                        text TEXT,
                        timestamp INTEGER UNIQUE,
-                       embedding BLOB
+                       embedding BLOB,
+                       filename TEXT
                    )"""
             )
             # Add index on timestamp for faster lookups
             cursor.execute(
                 "CREATE INDEX IF NOT EXISTS idx_timestamp ON entries (timestamp)"
             )
+
+            # Migration: Attempt to add 'filename' column if it doesn't exist
+            try:
+                cursor.execute("ALTER TABLE entries ADD COLUMN filename TEXT")
+            except sqlite3.OperationalError:
+                # Column likely already exists
+                pass
+
             conn.commit()
     except sqlite3.Error as e:
         print(f"Database error during table creation: {e}")
@@ -51,7 +60,7 @@ def get_all_entries() -> List[Entry]:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row  # Return rows as dictionary-like objects
             cursor = conn.cursor()
-            cursor.execute("SELECT id, app, title, text, timestamp, embedding FROM entries ORDER BY timestamp DESC")
+            cursor.execute("SELECT id, app, title, text, timestamp, embedding, filename FROM entries ORDER BY timestamp DESC")
             results = cursor.fetchall()
             for row in results:
                 # Deserialize the embedding blob back into a NumPy array
@@ -64,6 +73,7 @@ def get_all_entries() -> List[Entry]:
                         text=row["text"],
                         timestamp=row["timestamp"],
                         embedding=embedding,
+                        filename=row["filename"],
                     )
                 )
     except sqlite3.Error as e:
@@ -93,7 +103,7 @@ def get_timestamps() -> List[int]:
 
 
 def insert_entry(
-    text: str, timestamp: int, embedding: np.ndarray, app: str, title: str
+    text: str, timestamp: int, embedding: np.ndarray, app: str, title: str, filename: str
 ) -> Optional[int]:
     """
     Inserts a new entry into the database.
@@ -104,6 +114,7 @@ def insert_entry(
         embedding (np.ndarray): The embedding vector for the text.
         app (str): The name of the active application.
         title (str): The title of the active window.
+        filename (str): The filename of the screenshot.
 
     Returns:
         Optional[int]: The ID of the newly inserted row, or None if insertion fails.
@@ -115,10 +126,10 @@ def insert_entry(
         with sqlite3.connect(db_path) as conn:
             cursor = conn.cursor()
             cursor.execute(
-                """INSERT INTO entries (text, timestamp, embedding, app, title)
-                   VALUES (?, ?, ?, ?, ?)
+                """INSERT INTO entries (text, timestamp, embedding, app, title, filename)
+                   VALUES (?, ?, ?, ?, ?, ?)
                    ON CONFLICT(timestamp) DO NOTHING""", # Avoid duplicates based on timestamp
-                (text, timestamp, embedding_bytes, app, title),
+                (text, timestamp, embedding_bytes, app, title, filename),
             )
             conn.commit()
             if cursor.rowcount > 0: # Check if insert actually happened
